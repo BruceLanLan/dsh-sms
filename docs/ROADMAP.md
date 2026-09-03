@@ -39,7 +39,8 @@
 3. `cancelPairing` 在后台任务进行中可用 → 验证点：取消后 `pairingTask` 以 AbortError 结束，状态回 `idle`，凭据未写。
 4. 设置页：`pairing` 阶段禁用"Save numbers"，避免并发写 revision → 验证点：`tests/ui.test.tsx` 新增用例。
 5. `pairedAt` 持久化到 domain global，启动时读回 → 验证点：重启后 `getState().pairing.pairedAt` 不变。
-6. README / README.zh / SECURITY 同步描述。
+6. 给 `createGmessagesConnection` 建假 `connect()` 夹具（注入 `onEvent`/`finished`），覆盖 `unpaired`/`accountChange` 推送和 `jar-dead` 真实路径；目前监督器测试用的是假连接，真实工厂的这条路径没有自动化覆盖。
+7. README / README.zh / SECURITY 同步描述。
 
 范围边界：不做多账号；不改 gmessages 版本。
 
