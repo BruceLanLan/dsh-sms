@@ -66,8 +66,11 @@ export interface SmsConnectionConfig {
   apiKey?: string
   /** Request-id source for tests. */
   newId?: () => string
-  /** Redacted one-line diagnostics (rotation outcomes, death reasons); never message text or numbers. */
-  onDiagnostic?: (message: string) => void
+  /**
+   * Redacted one-line diagnostics (rotation outcomes, death reasons); never message text or numbers.
+   * `debug` marks routine chatter such as successful rotation cycles.
+   */
+  onDiagnostic?: (message: string, level?: 'info' | 'debug') => void
 }
 
 /** Injectable Google Messages connection factory. */
@@ -458,13 +461,18 @@ export const createGmessagesConnection: SmsConnectionFactory = async config => {
     stopSignal: stopSignal.signal,
     ...(config.newId === undefined ? {} : { newId: config.newId }),
     onEvent: handleEvent,
-    onRotation: event => config.onDiagnostic?.(describeRotation(event)),
+    onRotation: event => config.onDiagnostic?.(describeRotation(event), event.kind === 'cycle' ? 'debug' : 'info'),
     onSessionError: error => config.onDiagnostic?.(`session persistence failed: ${errorName(error)}`),
   })
   operations = client.operations
   const finished: Promise<SmsConnectionDeath | null> = client.finished().then(reason => {
     queue.close()
-    if (reason === null) return death
+    // A verdict recorded from an `unpaired`/`accountChange` push wins regardless of
+    // how the run then ended. (gmessages 0.1.2: a `stopSignal` abort runs the real
+    // teardown and settles `finished()` with null, same as `stop()`, so `reason`
+    // is null here in practice; the precedence makes that irrelevant.)
+    if (death !== null) return death
+    if (reason === null) return null
     const described = describeDeath(reason)
     config.onDiagnostic?.(`google messages stream died: ${described.reason}`)
     return described

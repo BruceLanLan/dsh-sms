@@ -317,13 +317,13 @@ export class DshSmsService extends TypertRemoteService {
         await this.ctx.credentials.set(GOOGLE_CREDENTIAL_REF, serializeSmsCredential({ version: 1, session }))
       },
       authorizedNumbers: numbers,
-      onDiagnostic: message => this.diagnostic(message),
+      onDiagnostic: (message, level) => this.diagnostic(message, level),
     }
   }
 
   /** Redacted operational log line: state names and error codes only, never numbers or message text. */
-  private diagnostic(message: string): void {
-    this.ctx.logger.info(`dsh-sms: ${message}`)
+  private diagnostic(message: string, level: 'info' | 'debug' = 'info'): void {
+    this.ctx.logger[level](`dsh-sms: ${message}`)
   }
 
   private async receiveSmsMessage(message: SmsInboundMessage): Promise<void> {
