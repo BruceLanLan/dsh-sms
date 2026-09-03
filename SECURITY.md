@@ -15,7 +15,10 @@ phone number, so this document states what the plugin does with them.
   succeeds. The session document that pairing produces is what persists.
 - **Message content stays local.** Inbound text is routed to DSH as a prompt;
   outbound answers are sent back over the same conversation. Neither message
-  text nor raw phone numbers are written to plugin logs.
+  text nor raw phone numbers are written to plugin logs. The plugin does log
+  one-line diagnostics (`dsh-sms: …`) through the DSH host logger: listener
+  state transitions, cookie-rotation outcomes, death reasons, and stable error
+  codes. Those lines carry state names and error class names only.
 - **Session rotation is single-writer.** The live connection is the only
   writer of the stored session blob (`onSessionUpdate` → credential store).
   Reconnects re-read the latest blob, so a rotated session is never clobbered.
@@ -25,8 +28,13 @@ phone number, so this document states what the plugin does with them.
 - Only **1:1 conversations** are considered: rosters must resolve to exactly
   one "me" participant and one peer. Group chats are ignored.
 - Only conversations whose **peer number is in the configured authorized
-  list** (E.164, normalized with a bounded country-code suffix fallback) are
-  accepted. Unknown numbers are dropped without a reply.
+  list** (E.164) are accepted. Google sometimes reports a peer's national
+  number without its country code, so a peer number may be shorter than the
+  configured number by at most four leading digits and must otherwise match
+  exactly. The fallback is one-directional: a configured number that is
+  shorter than the peer's never matches, so a short entry cannot authorize
+  every longer number ending with it. Unknown numbers are dropped without a
+  reply.
 - Your own sends, media-only messages, and empty text are ignored.
 - Anything any authorized sender can prompt is limited to what the DSH
   workspace the plugin runs in can do with its configured tools. Restrict the
@@ -40,6 +48,10 @@ phone number, so this document states what the plugin does with them.
   than continuing.
 - Pairing aborts on disconnect and on plugin teardown; in-flight pairing never
   completes after the host is gone.
+- A permanently dead session is not retried. When the relay refuses the stored
+  cookies (`jar-dead`), or the phone reports `unpaired`/`accountChange`, the
+  listener stops with `session-dead` instead of reconnecting forever; the
+  stored credential is left in place until you disconnect and pair again.
 - Errors crossing the RPC boundary are redacted: stable codes plus
   human-readable messages that contain no secrets or message content.
 

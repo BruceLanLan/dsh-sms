@@ -147,6 +147,7 @@ export class DshSmsService extends TypertRemoteService {
       onState: state => {
         this.runtime = state
         router.setRuntimeHealthy(state.phase === 'listening')
+        this.diagnostic(`listener ${describeRuntime(state)}`)
       },
       onMessage: message => this.receiveSmsMessage(message),
     })
@@ -316,7 +317,13 @@ export class DshSmsService extends TypertRemoteService {
         await this.ctx.credentials.set(GOOGLE_CREDENTIAL_REF, serializeSmsCredential({ version: 1, session }))
       },
       authorizedNumbers: numbers,
+      onDiagnostic: message => this.diagnostic(message),
     }
+  }
+
+  /** Redacted operational log line: state names and error codes only, never numbers or message text. */
+  private diagnostic(message: string): void {
+    this.ctx.logger.info(`dsh-sms: ${message}`)
   }
 
   private async receiveSmsMessage(message: SmsInboundMessage): Promise<void> {
@@ -419,6 +426,14 @@ export class DshSmsService extends TypertRemoteService {
   private requireSupervisor(): SmsSupervisor {
     if (this.supervisor === undefined) throw new Error('dsh-sms supervisor is not initialized')
     return this.supervisor
+  }
+}
+
+function describeRuntime(state: RuntimeView): string {
+  switch (state.phase) {
+    case 'retrying': return `retrying (attempt ${state.attempt})`
+    case 'failed': return `failed (${state.error.code})`
+    default: return state.phase
   }
 }
 

@@ -13,8 +13,3 @@ export function normalizeE164(input: string): string {
   }
   return value
 }
-
-/** Constant-shape equality after strict E.164 normalization. */
-export function samePhone(left: string, right: string): boolean {
-  return normalizeE164(left) === normalizeE164(right)
-}

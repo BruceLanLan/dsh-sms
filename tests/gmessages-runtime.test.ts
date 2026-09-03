@@ -7,7 +7,9 @@ import {
   type ConversationFacts,
   type SmsConnection,
   type SmsConnectionConfig,
+  type SmsConnectionDeath,
 } from '../src/gmessages-runtime.js'
+import type { RuntimeView } from '../src/types.js'
 
 const connectionConfig: SmsConnectionConfig = {
   loadSession: async () => 'session-blob',
@@ -44,6 +46,20 @@ function heldConnection(stop = vi.fn(async () => {})): SmsConnection {
   }
 }
 
+/** A connection whose stream ends immediately with the given death verdict. */
+function dyingConnection(death: SmsConnectionDeath | null): SmsConnection {
+  return {
+    messages: (async function* () {})(),
+    stop: vi.fn(async () => {}),
+    finished: async () => death,
+  }
+}
+
+function collectStates() {
+  const states: RuntimeView[] = []
+  return { states, onState: (state: RuntimeView) => { states.push(state) } }
+}
+
 describe('Google Messages ingress policy', () => {
   it('accepts only authorized 1:1 text DMs from a resolvable roster', () => {
     expect(acceptsInboundMessage(inbound(), facts, connectionConfig.authorizedNumbers)).toBe(true)
@@ -63,6 +79,15 @@ describe('Google Messages ingress policy', () => {
     expect(numbersMatch('+8613800138000', '13800138000')).toBe(true)
     expect(numbersMatch('+14155552671', '+14155559999')).toBe(false)
     expect(numbersMatch('+86', '+8613800138000')).toBe(false)
+  })
+
+  it('never lets a shorter configured number authorize a longer peer', () => {
+    // Only the peer may lack a country code; a configured suffix must not widen authorization.
+    expect(numbersMatch('+12345678', '+8613912345678')).toBe(false)
+    expect(numbersMatch('+13800138000', '+8613800138000')).toBe(false)
+    // The omitted prefix is bounded to a country code plus a trunk digit.
+    expect(numbersMatch('+14155552671', '4155552671')).toBe(true)
+    expect(numbersMatch('+123456789012345', '55552671')).toBe(false)
   })
 })
 
@@ -158,6 +183,62 @@ describe('SmsSupervisor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('SmsSupervisor permanent death', () => {
+  it('surfaces session-dead and stops retrying when the stream reports a dead jar', async () => {
+    const { states, onState } = collectStates()
+    const factory = vi.fn(async () => dyingConnection({ permanent: true, reason: 'jar-dead' }))
+    const supervisor = new SmsSupervisor(factory, {
+      reconnectMinMs: 1,
+      reconnectMaxMs: 2,
+      onState,
+      onMessage: async () => {},
+    })
+    await supervisor.restart(connectionConfig)
+    await vi.waitFor(() => { expect(supervisor.state.phase).toBe('failed') })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(supervisor.state).toMatchObject({ phase: 'failed', error: { code: 'session-dead' } })
+    expect(states.some(state => state.phase === 'retrying')).toBe(false)
+    // An explicit retry still re-opens the connection with the same desired config.
+    await supervisor.retry()
+    expect(factory).toHaveBeenCalledTimes(2)
+    await supervisor.stop()
+  })
+
+  it('stops retrying when connect itself reports a dead jar', async () => {
+    const { onState } = collectStates()
+    const factory = vi.fn(async () => {
+      throw Object.assign(new Error('relay refused the cookies'), { name: 'JarDeadError', code: 'JarDeadError' })
+    })
+    const supervisor = new SmsSupervisor(factory, {
+      reconnectMinMs: 1,
+      reconnectMaxMs: 2,
+      onState,
+      onMessage: async () => {},
+    })
+    await supervisor.restart(connectionConfig)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(supervisor.state).toMatchObject({ phase: 'failed', error: { code: 'session-dead' } })
+    await supervisor.stop()
+  })
+
+  it('keeps reconnecting after a transient death', async () => {
+    const { onState } = collectStates()
+    const factory = vi.fn(async () => dyingConnection({ permanent: false, reason: 'stream-fatal:502' }))
+    const supervisor = new SmsSupervisor(factory, {
+      reconnectMinMs: 1,
+      reconnectMaxMs: 2,
+      onState,
+      onMessage: async () => {},
+      random: () => 0.5,
+    })
+    await supervisor.restart(connectionConfig)
+    await vi.waitFor(() => { expect(factory.mock.calls.length).toBeGreaterThan(2) })
+    await supervisor.stop()
   })
 })
 

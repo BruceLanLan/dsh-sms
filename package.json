@@ -81,12 +81,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:profile": "node ./scripts/profile-smoke.mjs",
-    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "audit:prod": "npm audit --audit-level=high",
     "check": "npm run test && npm run build && npm run audit:prod && npm pack --dry-run --ignore-scripts"
-  },
-  "dependencies": {
-    "gmessages": "^0.1.2",
-    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -212,14 +208,16 @@
     "@deepseek-ai/dsh-scope": "0.1.0-rc.6",
     "@deepseek-ai/dsh-timeout": "0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "gmessages": "^0.1.2",
+    "zod": "^4.4.3"
   },
   "directories": {
     "test": "tests"
   },
-  "author": "",
+  "author": "BruceLanLan",
   "bugs": {
-    "url": "https://github.com/bruce/dsh-sms/issues"
+    "url": "https://github.com/BruceLanLan/dsh-sms/issues"
   },
   "homepage": "https://github.com/BruceLanLan/dsh-sms#readme"
 }

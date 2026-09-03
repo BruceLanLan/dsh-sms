@@ -40,7 +40,7 @@ dsh plugin --profile web add dsh-sms
 
 重启 `dsh web`，打开 **设置 → SMS**。
 
-本地开发安装：
+本地开发安装请用打包后的 tarball，不要以目录 link 方式安装。构建产物 `lib/index.js` 已把插件自身的运行时依赖（`gmessages`、`zod`）打包进去，tarball 只依赖 Host 已经提供的 DSH 包：
 
 ```sh
 npm ci --legacy-peer-deps
@@ -111,7 +111,7 @@ dsh plugin --profile web add ./dsh-sms-*.tgz
 | `dbsc-session-refused` | 导出来自 Chrome 设备绑定会话；改用无痕窗口或 Firefox/Safari。 |
 | `pairing-expired` | 重新开始，并在中继保留窗口内于手机上批准。 |
 | `pairing-denied` | 手机没有批准配对请求。 |
-| `session-dead` | 存储的会话已失效；断开后重新配对。 |
+| `session-dead` | 存储的会话不再能通过认证（中继拒绝了它的 cookie，或手机已解除配对）。监听器会停下而不是无限重连；断开后重新配对。 |
 | `settings-conflict` | 另一个窗口改过设置；刷新重试。 |
 | `credential-readonly` / `settings-readonly` | 移除更高优先级的只读 DSH 覆盖。 |
 
@@ -134,7 +134,9 @@ npm pack --dry-run
 DSH_BIN=/path/to/dsh npm run test:profile
 ```
 
-测试覆盖：入站策略、号码匹配、Supervisor 重连退避、重放去重、配对错误分类、回合归属、交互失败关闭行为、分块、纯文本转换、设置页 UI。CI 会跑测试套件、打包产物检查，以及一次性的 DSH web profile 安装验证。
+测试覆盖：入站策略、号码匹配、Supervisor 重连退避与永久死亡处理、重放去重、配对错误分类、回合归属、交互失败关闭行为、分块、纯文本转换、设置页 UI。CI 会跑测试套件、打包产物检查，以及一次性的 DSH web profile 安装验证。`npm run audit:prod` 审计整棵依赖树，因为包本身已没有运行时依赖可单独审计。
+
+评审记录与开发规划见 `docs/`：[`docs/REVIEW-2026-09-03.md`](docs/REVIEW-2026-09-03.md)、[`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## License
 

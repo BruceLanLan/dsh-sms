@@ -11,9 +11,11 @@ import {
   setTyping,
   type Client,
   type ClientEvent,
+  type DeathReason,
   type Endpoints,
   type InboundMessage,
   type OperationDispatcher,
+  type RotationEvent,
 } from 'gmessages'
 import { PluginError } from './errors.js'
 import type { RuntimeView } from './types.js'
@@ -30,12 +32,22 @@ export interface SmsInboundMessage {
   send(text: string): Promise<void>
 }
 
+/** Why a connection ended. Permanent deaths need a new pairing; reconnecting cannot revive them. */
+export interface SmsConnectionDeath {
+  /** True when the stored session can no longer authenticate (dead jar, phone unpaired, account changed). */
+  permanent: boolean
+  /** Redacted, log-safe reason such as `jar-dead`, `unpaired`, or `stream-fatal:502`. */
+  reason: string
+}
+
 /** Running Google Messages connection behind an injectable adapter seam. */
 export interface SmsConnection {
   /** Accepted inbound direct text messages. */
   messages: AsyncIterable<SmsInboundMessage>
   /** Stop and release provider resources. */
   stop(): Promise<void>
+  /** Resolve why the stream ended, or null after a clean stop. Absent means "unknown, treat as transient". */
+  finished?(): Promise<SmsConnectionDeath | null>
 }
 
 /** Everything the transport factory needs to open one live connection. */
@@ -54,6 +66,8 @@ export interface SmsConnectionConfig {
   apiKey?: string
   /** Request-id source for tests. */
   newId?: () => string
+  /** Redacted one-line diagnostics (rotation outcomes, death reasons); never message text or numbers. */
+  onDiagnostic?: (message: string) => void
 }
 
 /** Injectable Google Messages connection factory. */
@@ -169,7 +183,9 @@ export class SmsSupervisor {
       void this.consume(connection, generation)
     } catch (error) {
       if (generation !== this.generation || this.desired === undefined) return
-      this.scheduleReconnect(error)
+      const permanent = permanentConnectFailure(error)
+      if (permanent !== undefined) this.publishDead(permanent)
+      else this.scheduleReconnect(error)
     }
   }
 
@@ -184,7 +200,9 @@ export class SmsSupervisor {
         }
       }
       if (generation === this.generation && connection === this.connection && this.desired !== undefined) {
-        await this.retireAndReconnect(connection, generation, new Error('Google Messages stream ended'))
+        const death = await connection.finished?.().catch(() => null) ?? null
+        if (death?.permanent === true) await this.retireAsDead(connection, generation, death)
+        else await this.retireAndReconnect(connection, generation, new Error('Google Messages stream ended'))
       }
     } catch (error) {
       if (generation === this.generation && connection === this.connection && this.desired !== undefined) {
@@ -205,6 +223,32 @@ export class SmsSupervisor {
       // The failed stream is already fenced by identity and generation.
     }
     if (generation === this.generation && this.desired !== undefined) this.scheduleReconnect(error)
+  }
+
+  /** Retire a permanently dead connection: surface `session-dead`, keep `desired` so an explicit retry still works. */
+  private async retireAsDead(
+    connection: SmsConnection,
+    generation: number,
+    death: SmsConnectionDeath,
+  ): Promise<void> {
+    this.connection = undefined
+    try {
+      await connection.stop()
+    } catch {
+      // Already dead; nothing further to release.
+    }
+    if (generation === this.generation && this.desired !== undefined) this.publishDead(death.reason)
+  }
+
+  private publishDead(reason: string): void {
+    this.reconnectAttempt = 0
+    this.publish({
+      phase: 'failed',
+      error: {
+        code: 'session-dead',
+        message: `The Google Messages session is no longer valid (${reason}). Disconnect and pair again.`,
+      },
+    })
   }
 
   private scheduleReconnect(_error: unknown): void {
@@ -325,17 +369,28 @@ function factsForConversation(
   return pending
 }
 
-/** Compare two phone numbers tolerantly: digits-only, with a bounded suffix fallback. */
-export function numbersMatch(left: string, right: string): boolean {
+/** Longest prefix (country code plus an optional trunk digit) Google may omit from a peer number. */
+const MAX_OMITTED_PREFIX_DIGITS = 4
+
+/**
+ * Decide whether a Google-supplied peer number is the configured E.164 number.
+ *
+ * Digits-only equality, plus one asymmetric fallback: Google sometimes reports a
+ * peer's national number without the country code, so the *peer* may be shorter
+ * by at most a country code. A configured number that is shorter than the peer
+ * never matches — otherwise a short entry would authorize every longer number
+ * ending with it.
+ */
+export function numbersMatch(configured: string, peer: string): boolean {
   const digits = (value: string) => value.replace(/\D+/gu, '')
-  const a = digits(left)
-  const b = digits(right)
-  if (a === b) return true
-  // Google sometimes returns a local number without the country code; accept a
-  // bounded suffix match so configured E.164 numbers still authorize it.
-  const shorter = a.length <= b.length ? a : b
-  const longer = a.length <= b.length ? b : a
-  return shorter.length >= 8 && longer.endsWith(shorter)
+  const expected = digits(configured)
+  const actual = digits(peer)
+  if (expected === actual) return true
+  const omitted = expected.length - actual.length
+  return actual.length >= 8
+    && omitted > 0
+    && omitted <= MAX_OMITTED_PREFIX_DIGITS
+    && expected.endsWith(actual)
 }
 
 /** Pure inbound policy shared by the production adapter and its tests. */
@@ -361,6 +416,7 @@ export const createGmessagesConnection: SmsConnectionFactory = async config => {
   const factsCache = new Map<string, Promise<ConversationFacts | undefined>>()
   const tracker = createMessageTracker({ maxIds: 1_024 })
   let operations: OperationDispatcher | undefined
+  let death: SmsConnectionDeath | null = null
 
   const deliver = async (
     message: InboundMessage,
@@ -373,6 +429,14 @@ export const createGmessagesConnection: SmsConnectionFactory = async config => {
 
   const handleEvent = (event: ClientEvent): void => {
     if (event.kind !== 'push' || operations === undefined) return
+    const pushCase = event.update.case
+    if (pushCase === 'unpaired' || pushCase === 'accountChange') {
+      // The relay says this pairing is gone; reconnecting with the same session cannot help.
+      death = { permanent: true, reason: pushCase }
+      config.onDiagnostic?.(`google messages push ${pushCase}: session is permanently dead`)
+      stopSignal.abort()
+      return
+    }
     for (const message of messagesOf(event.update)) {
       if (tracker(message)?.type !== 'message') continue
       void deliver(message, operations)
@@ -394,9 +458,17 @@ export const createGmessagesConnection: SmsConnectionFactory = async config => {
     stopSignal: stopSignal.signal,
     ...(config.newId === undefined ? {} : { newId: config.newId }),
     onEvent: handleEvent,
+    onRotation: event => config.onDiagnostic?.(describeRotation(event)),
+    onSessionError: error => config.onDiagnostic?.(`session persistence failed: ${errorName(error)}`),
   })
   operations = client.operations
-  void client.finished().then(() => queue.close())
+  const finished: Promise<SmsConnectionDeath | null> = client.finished().then(reason => {
+    queue.close()
+    if (reason === null) return death
+    const described = describeDeath(reason)
+    config.onDiagnostic?.(`google messages stream died: ${described.reason}`)
+    return described
+  })
 
   return {
     messages: queue,
@@ -405,7 +477,46 @@ export const createGmessagesConnection: SmsConnectionFactory = async config => {
       await client.stop()
       queue.close()
     },
+    finished: () => finished,
   }
+}
+
+/** Classify a `connect()` failure that no reconnect can fix; undefined means transient. */
+function permanentConnectFailure(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code
+  if (code === 'JarDeadError') return 'jar-dead'
+  if (code === 'session-missing' || code === 'session-dead') return String(code)
+  return undefined
+}
+
+/** Reduce a gmessages death to a redacted reason; only a dead jar is permanent. */
+function describeDeath(reason: DeathReason): SmsConnectionDeath {
+  switch (reason.kind) {
+    case 'jar-dead':
+      return { permanent: true, reason: 'jar-dead' }
+    case 'stream-fatal':
+      return { permanent: false, reason: `stream-fatal:${reason.status}` }
+    case 'stream-error':
+      return { permanent: false, reason: `stream-error:${errorName(reason.error)}` }
+    case 'refresh-failed':
+      return { permanent: false, reason: `refresh-failed:${errorName(reason.error)}` }
+  }
+}
+
+function describeRotation(event: RotationEvent): string {
+  switch (event.kind) {
+    case 'cycle':
+      return `cookie rotation ${String((event.outcome as { kind?: unknown }).kind ?? 'unknown')}`
+    case 'stalled':
+      return `cookie rotation stalled (${event.reason}); the session is dying and will need a new pairing if it does not recover`
+    case 'error':
+      return `cookie rotation error ${errorName(event.error)}`
+  }
+}
+
+/** Error class name only: never the message, which may quote cookies or URLs. */
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error
 }
 
 /** Build the reply/typing channel for one accepted inbound message. */

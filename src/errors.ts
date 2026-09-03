@@ -40,12 +40,3 @@ export function publicError(error: unknown): PublicPluginError {
     message: 'The SMS plugin encountered an unexpected error. Retry or check host logs.',
   }
 }
-
-/** Assert a condition with a stable public failure. */
-export function requireCondition(
-  condition: unknown,
-  code: PluginErrorCode,
-  message: string,
-): asserts condition {
-  if (!condition) throw new PluginError(code, message)
-}

@@ -50,7 +50,10 @@ dsh plugin --profile web add dsh-sms
 
 Restart `dsh web`, then open **Settings → SMS**.
 
-For a local checkout:
+For a local checkout, install the packed tarball rather than linking the
+directory. The built `lib/index.js` bundles the plugin's own runtime
+dependencies (`gmessages`, `zod`), so the tarball needs nothing beyond the DSH
+packages the host already provides:
 
 ```sh
 npm ci --legacy-peer-deps
@@ -137,7 +140,7 @@ overrides replace the complete row, so preserve both `id` and `name`:
 | `dbsc-session-refused` | The export is from a device-bound Chrome session; use an incognito window or Firefox/Safari. |
 | `pairing-expired` | Start again and approve on the phone within the relay's window. |
 | `pairing-denied` | The phone did not approve the pairing request. |
-| `session-dead` | The stored session is stale or invalid; disconnect and pair again. |
+| `session-dead` | The stored session no longer authenticates (the relay refused its cookies, or the phone unpaired). The listener stops instead of reconnecting; disconnect and pair again. |
 | `settings-conflict` | Another window changed settings; refresh and retry. |
 | `credential-readonly` / `settings-readonly` | Remove the higher-priority read-only DSH override. |
 
@@ -172,10 +175,16 @@ install. At runtime the plugin runs against whatever dsh provides (the peer
 range allows rc.6–rc.8). See `.github/workflows/ci.yml`.
 
 The suite covers inbound policy, number matching, supervisor reconnect
-backoff, replay deduplication, pairing error classification, turn ownership,
-interaction fail-closed behavior, chunking, plaintext conversion, and the
-settings UI. CI runs the suite, packed-artifact checks, and a disposable DSH
-web-profile installation.
+backoff and permanent-death handling, replay deduplication, pairing error
+classification, turn ownership, interaction fail-closed behavior, chunking,
+plaintext conversion, and the settings UI. CI runs the suite, packed-artifact
+checks, and a disposable DSH web-profile installation. `npm run audit:prod`
+audits the whole tree because the package has no runtime dependencies left to
+audit on their own.
+
+Review notes and the development roadmap live in `docs/` (Chinese):
+[`docs/REVIEW-2026-09-03.md`](docs/REVIEW-2026-09-03.md) and
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## License
 
